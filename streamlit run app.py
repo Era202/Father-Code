@@ -381,7 +381,7 @@ try:
 
         st.markdown("---")
         st.download_button(
-            label="🗂️(Excel) تحميل التقرير الكامل 🔥",
+            label="🗂️  (Excel) تحميل التقرير الكامل  🔥",
             data=st.session_state.output_excel.getvalue(),
             file_name="MRP_BOM_Report_Stateful.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -402,6 +402,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 
 
