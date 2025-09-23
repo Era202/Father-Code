@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# 23/9/2025
 # ==============================================================================
 # MRP BOM Analysis - UI Enhanced & State-Preserving Version (Error Corrected)
 # Developed by: Reda Roshdy (Error handling for duplicates added)
@@ -229,4 +229,5 @@ try:
         )
 
 except Exception as e:
+
     st.exception(f"❌ حدث خطأ: {e}")
