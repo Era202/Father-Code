@@ -26,7 +26,7 @@ def try_get_col(df, candidates):
 
 # --- إعداد الصفحة ---
 st.set_page_config(page_title="MRP BOM Analysis", layout="wide")
-st.markdown("🚀 الأبناء مع الاباء BOM أداة تحليل ")
+st.subheader("🚀 الأبناء مع الاباء BOM أداة تحليل ")
 st.markdown("---")
 
 # ==============================================================================
@@ -390,4 +390,5 @@ try:
 
 except Exception as e:
     st.exception(f"❌ حدث خطأ: {e}")
+
 
