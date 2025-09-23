@@ -381,7 +381,7 @@ try:
 
         st.markdown("---")
         st.download_button(
-            label="📥 تحميل التقرير الكامل (Excel)",
+            label="🗂️ تحميل التقرير الكامل (Excel)",
             data=st.session_state.output_excel.getvalue(),
             file_name="MRP_BOM_Report_Stateful.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -390,5 +390,6 @@ try:
 
 except Exception as e:
     st.exception(f"❌ حدث خطأ: {e}")
+
 
 
