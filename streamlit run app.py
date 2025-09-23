@@ -394,9 +394,13 @@ except Exception as e:
 # ---------------------------
 # Footer
 # ---------------------------
-st.markdown("""
-✨ تم التنفيذ بواسطة **م / رضا رشدي** – جميع الحقوق محفوظة © 2025 ✨
-""", unsafe_allow_html=True)
-
+st.markdown(
+    """
+    <p style="text-align:center; margin-top:30px;">
+        ✨ تم التنفيذ بواسطة <b>م / رضا رشدي</b> – جميع الحقوق محفوظة © 2025 ✨
+    </p>
+    """,
+    unsafe_allow_html=True
+)
 
 
