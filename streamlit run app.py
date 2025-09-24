@@ -350,7 +350,7 @@ try:
             if not st.session_state.all_merged_df.empty:
                 low_shared_df = st.session_state.all_merged_df[st.session_state.all_merged_df['Usage_%'] < 100].sort_values('Usage_%')
                 st.subheader("📉 المكونات الأقل مشاركة عبر كل الـ Parents")
-                display_first = ['Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                display_first = ['Parent', 'Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
                 cols = [c for c in display_first if c in low_shared_df.columns] + [c for c in low_shared_df.columns if c not in display_first]
                 st.dataframe(low_shared_df[cols].head(200))
 
@@ -358,7 +358,7 @@ try:
             st.subheader("أعلى 10 مكونات انحرافًا على المستوى الإجمالي")
             top10 = st.session_state.top10_global.copy()
             if not top10.empty:
-                display_first = ['Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                display_first = ['Parent', 'Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
                 cols = [c for c in display_first if c in top10.columns] + [c for c in top10.columns if c not in display_first]
                 st.dataframe(top10[cols])
             else:
@@ -371,7 +371,7 @@ try:
                 chosen_parent = st.selectbox("اختر Parent لعرض تفاصيله", options=parents_with_dev)
                 dfp = st.session_state.per_parent_topdev.get(chosen_parent, pd.DataFrame()).copy()
                 if not dfp.empty:
-                    display_first = ['Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                    display_first = ['Parent', 'Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
                     cols = [c for c in display_first if c in dfp.columns] + [c for c in dfp.columns if c not in display_first]
                     st.dataframe(dfp[cols])
                 else:
@@ -402,6 +402,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 
 
