@@ -1,0 +1,516 @@
+# ==============================================================================
+# MRP BOM Analysis - Optimized single-file Streamlit app
+# - Modularized (helper functions)
+# - Keeps original behavior and outputs (Excel writer openpyxl)
+# - Comments in Arabic for maintainability
+# Developed by: Refactor based on original by Reda Roshdy
+# ==============================================================================
+
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+
+# -------------------------
+# ----- Helper Functions ---
+# -------------------------
+
+def auto_detect(df, candidates):
+    """
+    اختَر أول عمود من candidates موجود في df.columns.
+    لو ولا واحد موجود، ارجع العمود الأول في الجدول كـ fallback.
+    """
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return df.columns[0]
+
+def try_get_col(df, candidates):
+    """
+    حاول تجيب أول عمود من candidates، أو ارجع None لو الداتا None أو مفيهوش.
+    """
+    if df is None:
+        return None
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def read_sheets(file, bom_sheet, father_sheet, mrp_sheet):
+    """
+    قراءة الشيتات المختارة وتنظيف أسماء الأعمدة.
+    """
+    bom_df = pd.read_excel(file, sheet_name=bom_sheet)
+    father_df = pd.read_excel(file, sheet_name=father_sheet) if father_sheet != "None" else None
+    mrp_df = pd.read_excel(file, sheet_name=mrp_sheet) if mrp_sheet != "None" else None
+
+    # تنظيف أسماء الأعمدة من مسافات
+    bom_df.columns = [str(c).strip() for c in bom_df.columns]
+    if father_df is not None:
+        father_df.columns = [str(c).strip() for c in father_df.columns]
+    if mrp_df is not None:
+        mrp_df.columns = [str(c).strip() for c in mrp_df.columns]
+
+    return bom_df, father_df, mrp_df
+
+def build_bom_grouped(bom_df, code_col, component_col, qty_col=None):
+    """
+    ارجع قاموس: parent_code -> set(components) أو dict(component->qty) لو qty موجود.
+    """
+    if qty_col:
+        bom_grouped = bom_df.groupby(code_col).apply(
+            lambda g: dict(zip(g[component_col], g[qty_col]))
+        ).to_dict()
+    else:
+        bom_grouped = bom_df.groupby(code_col)[component_col].apply(set).to_dict()
+    return bom_grouped
+
+def build_mrp_dict(mrp_df, mrp_component_col):
+    """
+    ارجع dict للمكونات الموجودة في MRP Control لتسهيل الlookup.
+    """
+    if mrp_df is None or mrp_component_col is None:
+        return {}
+    return mrp_df.drop_duplicates(subset=[mrp_component_col]).set_index(mrp_component_col).to_dict(orient='index')
+
+def build_desc_lookup(bom_df, mrp_df, mrp_component_col, desc_col_bom, desc_col_mrp, component_col):
+    """
+    بناء قاموس وصف لكل مكوّن (يستخدم MRP أولاً ثم BOM لتعويض الفجوات).
+    """
+    desc_lookup = {}
+    if mrp_df is not None and mrp_component_col and desc_col_mrp:
+        desc_lookup.update(
+            mrp_df.dropna(subset=[mrp_component_col]).drop_duplicates(subset=[mrp_component_col])
+            .set_index(mrp_component_col)[desc_col_mrp]
+            .to_dict()
+        )
+    if desc_col_bom:
+        bom_desc_map = (
+            bom_df.dropna(subset=[component_col, desc_col_bom])
+            .drop_duplicates(subset=[component_col])
+            .set_index(component_col)[desc_col_bom]
+            .to_dict()
+        )
+        for k, v in bom_desc_map.items():
+            if k not in desc_lookup and pd.notna(v):
+                desc_lookup[k] = v
+    return desc_lookup
+
+def reorder_columns_for_parent(df, children, ensure_component_first=False):
+    """
+    إعادة ترتيب أعمدة parent_df وفق القاعدة:
+    - first_block ثابت (Component إن طلبنا)،
+    - ثم MRP_Controller, Order_Type لو موجودين،
+    - ثم أعمدة الأبناء،
+    - ثم أي أعمدة إضافية.
+    if ensure_component_first=True سيضمن وضع 'Component' في البداية إذا كانت موجودة.
+    """
+    if df is None or df.empty:
+        return df
+    child_columns = [str(c) for c in children]
+    # ترتيب أساسي متوافق مع الكود الأصلي (مع إتاحة Component في الأول إذا مطلوب)
+    first_block = [
+        "Component" if ensure_component_first else "Planning Material",
+        "Component Description",
+        "Total_Children",
+        "Num_Children_with_Component",
+        "Usage_%",
+        "Deviation",
+        "parent",
+    ]
+    # لو طلبنا إجبار Component أولًا ووجدته، نضعه في البداية
+    if ensure_component_first:
+        # نفضل "Component" أولًا ثم إزالة ضعف احتمالي في first_block
+        first_block = ["Component", "Component Description", "Total_Children",
+                       "Num_Children_with_Component", "Usage_%", "Deviation", "parent"]
+    rest_cols = [c for c in ["MRP_Controller", "Order_Type"] if c in df.columns] + child_columns
+    others = [c for c in df.columns if c not in first_block + rest_cols]
+    ordered = [c for c in first_block if c in df.columns] + rest_cols + others
+    return df.reindex(columns=ordered)
+
+def safe_to_int_display(df, int_cols):
+    """
+    تأكد من أن الأعمدة في int_cols تعرض كأعداد صحيحة عند الطباعة (نحوّل القيم داخليًا).
+    لا يعدّل الأعمدة الأصلية في الستيت (نعمل نسخة على مستوى العرض).
+    """
+    df_copy = df.copy()
+    for col in int_cols:
+        if col in df_copy.columns:
+            # fillna then convert to numeric int if possible
+            df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').fillna(0).astype(int)
+    return df_copy
+
+def add_summary_row(summary_df):
+    """
+    إضافة صف الإجماليات/المتوسطات إلى summary_df (تعتمد الأعمدة الرقمية).
+    تعيد DataFrame جديد مع صف الإجمالي مُضاف وإندكس مُعاد ترتيبه.
+    """
+    if summary_df is None or summary_df.empty:
+        return summary_df
+    df = summary_df.copy()
+    numeric_cols = df.select_dtypes(include='number').columns.tolist()
+    # اعتبار الأعمدة المحتوية على % أو 'تشابه' كأعمدة نسبية نحتاج لها متوسط
+    percent_cols = [c for c in numeric_cols if "%" in c or "تشابه" in c or "Usage_" in c or c.endswith("_%")]
+    totals = df[numeric_cols].sum()
+    averages = df[percent_cols].mean() if percent_cols else pd.Series(dtype=float)
+    # استبدال المجموع بالمتوسط للأعمدة النسبية
+    for col in percent_cols:
+        totals[col] = averages.get(col, totals.get(col, 0))
+    totals_row = pd.DataFrame(totals).T
+    totals_row["Parent_Code"] = "🔢 الإجماليات / المتوسطات"
+    summary_with_totals = pd.concat([df, totals_row], ignore_index=True)
+    # تأكد من إندكس فريد
+    summary_with_totals = summary_with_totals.reset_index(drop=True)
+    return summary_with_totals
+
+def export_results_to_excel(output_buffer, per_parent_dfs, summary_df, top10_global):
+    """
+    كتابة جميع شيتات الـ Parents + Summary_Report داخل BytesIO باستخدام openpyxl.
+    per_parent_dfs: dict(parent_name -> DataFrame) أو list of tuples (name, df)
+    summary_df: DataFrame
+    top10_global: DataFrame
+    يعيد BytesIO (مُمرّر بنفس المرجع).
+    """
+    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+        # per_parent_dfs may be list of tuples
+        if isinstance(per_parent_dfs, dict):
+            items = per_parent_dfs.items()
+        else:
+            items = per_parent_dfs
+        for name, df in items:
+            try:
+                df.to_excel(writer, sheet_name=str(name)[:31], index=False)
+            except Exception:
+                # تجنب فشل الكتابة لاسم شيت غير صالح
+                df.to_excel(writer, sheet_name=str(name)[:31], index=False)
+        # Summary sheet
+        if summary_df is not None:
+            summary_df.to_excel(writer, sheet_name="Summary_Report", index=False)
+        # Top10 sheet
+        if top10_global is not None and not top10_global.empty:
+            top10_global.to_excel(writer, sheet_name="Top10_Global", index=False)
+    return output_buffer
+
+# -------------------------
+# ----- Streamlit UI ------
+# -------------------------
+
+st.set_page_config(page_title="MRP BOM Analysis", layout="wide")
+st.subheader("🚀 الأبناء مع الاباء BOM أداة تحليل (Optimized)")
+st.markdown("---")
+
+# Session state initialization (كما في الكود الأصلي)
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+    st.session_state.summary_df = pd.DataFrame()
+    st.session_state.top10_global = pd.DataFrame()
+    st.session_state.per_parent_topdev = {}
+    st.session_state.all_merged_df = pd.DataFrame()
+    st.session_state.output_excel = BytesIO()
+
+# Sidebar inputs (كما في النسخة الأصلية)
+st.sidebar.header("⚙️ 1. إعدادات التحليل")
+uploaded_file = st.sidebar.file_uploader("⬆️ ارفع ملف Excel", type=["xlsx"])
+
+if uploaded_file is None:
+    st.info("👋 يرجى رفع ملف Excel من الشريط الجانبي لبدء التحليل.")
+    st.stop()
+
+try:
+    xls = pd.ExcelFile(uploaded_file)
+    sheets = xls.sheet_names
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📄 2. اختر الشيتات")
+
+    default_bom = sheets.index("Bom") if "Bom" in sheets else 0
+    bom_sheet = st.sidebar.selectbox("اختر شيت الـ BOM", options=sheets, index=default_bom)
+
+    father_options = ["None"] + sheets
+    default_father = 1 + sheets.index("father code") if "father code" in sheets else 0
+    father_sheet = st.sidebar.selectbox("اختر شيت الـ Father", options=father_options, index=default_father)
+
+    mrp_options = ["None"] + sheets
+    default_mrp = 1 + sheets.index("MRP Contro") if "MRP Contro" in sheets else 0
+    mrp_sheet = st.sidebar.selectbox("اختر شيت MRP Contro (اختياري)", options=mrp_options, index=default_mrp)
+
+    # قراءة وتنظيف الشيتات
+    bom_df, father_df, mrp_control_df = read_sheets(uploaded_file, bom_sheet, father_sheet, mrp_sheet)
+
+    # اكتشاف الأعمدة الرئيسية
+    code_col = auto_detect(bom_df, ['Code', 'Material', 'Parent', 'Planning Material'])
+    component_col = auto_detect(bom_df, ['Component', 'Item', 'Material Name'])
+
+    qty_col = None
+    qty_candidates = [c for c in ['Qty', 'Quantity', 'Component Quantity', 'Quantity_Per'] if c in bom_df.columns]
+    if qty_candidates:
+        qty_col = auto_detect(bom_df, qty_candidates)
+
+    parent_col, child_col = None, None
+    if father_df is not None:
+        parent_col = auto_detect(father_df, ['Parent', 'Planning Material', 'Parent_Material'])
+        child_col = auto_detect(father_df, ['Material', 'Child', 'Child_Material'])
+
+    # MRP columns detection
+    mrp_component_col = None
+    mrp_controller_col = None
+    mrp_order_type_col = None
+    if mrp_control_df is not None:
+        mrp_component_col = auto_detect(mrp_control_df, ['Component', 'Material'])
+        mrp_controller_col = try_get_col(mrp_control_df, [
+            'MRP_Controller', 'MRP Controller', 'MRP controller', 'MRPC', 'MFC'
+        ]) or auto_detect(mrp_control_df, ['MRP_Controller', 'MFC'])
+        mrp_order_type_col = try_get_col(mrp_control_df, [
+            'Order_Type', 'Order Type', 'Order type', 'Type'
+        ]) or auto_detect(mrp_control_df, ['Order_Type', 'Type'])
+
+    # description candidates
+    desc_candidates = [
+        'Component Description', 'Component_Description',
+        'Description', 'Material Description', 'Short Text',
+        'Item Description', 'Component Name', 'Material Name', 'Name'
+    ]
+    desc_col_bom = try_get_col(bom_df, desc_candidates)
+    desc_col_mrp = try_get_col(mrp_control_df, desc_candidates) if mrp_control_df is not None else None
+
+    # parents available and selection
+    parents_available = sorted(father_df[parent_col].dropna().unique().astype(str)) if father_df is not None else []
+    selected_parents = st.sidebar.multiselect("اختر Parent(s) للتحليل", options=parents_available, default=parents_available)
+
+    # filters for Order Type and MRP Controller
+    selected_order_types = []
+    selected_mrp_controllers = []
+    if mrp_control_df is not None and mrp_order_type_col in mrp_control_df.columns:
+        order_types_options = sorted(mrp_control_df[mrp_order_type_col].dropna().astype(str).unique().tolist())
+        selected_order_types = st.sidebar.multiselect(
+            "فلترة حسب Order Type (متعدد)",
+            options=order_types_options,
+            default=order_types_options,
+            help="اتركها كما هي لعدم تضييق النتائج؛ اختر قيمًا محددة لتطبيق الفلتر."
+        )
+    if mrp_control_df is not None and mrp_controller_col in mrp_control_df.columns:
+        mrp_ctrl_options = sorted(mrp_control_df[mrp_controller_col].dropna().astype(str).unique().tolist())
+        selected_mrp_controllers = st.sidebar.multiselect(
+            "فلترة حسب MRP Controller (متعدد)",
+            options=mrp_ctrl_options,
+            default=mrp_ctrl_options,
+            help="اتركها كما هي لعدم تضييق النتائج؛ اختر قيمًا محددة لتطبيق الفلتر."
+        )
+
+    # ------------------------
+    # زر تشغيل التحليل
+    # ------------------------
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🚀 تشغيل التحليل", type="primary"):
+        with st.spinner("⏳ جاري معالجة البيانات..."):
+            # تنظيف وتحويل بعض الأعمدة لنص كما في النسخة الأصلية
+            bom_df[code_col] = bom_df[code_col].astype(str).str.strip()
+            bom_df[component_col] = bom_df[component_col].astype(str).str.strip()
+            if father_df is not None:
+                father_df[parent_col] = father_df[parent_col].astype(str).str.strip()
+                father_df[child_col] = father_df[child_col].astype(str).str.strip()
+            if mrp_control_df is not None and mrp_component_col:
+                mrp_control_df[mrp_component_col] = mrp_control_df[mrp_component_col].astype(str).str.strip()
+
+            # تجميع BOM وMRP وdesc_lookup
+            bom_grouped = build_bom_grouped(bom_df, code_col, component_col, qty_col)
+            mrp_dict = build_mrp_dict(mrp_control_df, mrp_component_col)
+            desc_lookup = build_desc_lookup(bom_df, mrp_control_df, mrp_component_col, desc_col_bom, desc_col_mrp, component_col)
+
+            # تهيئة قوائم لتجميع النتائج
+            summary_list = []
+            per_parent_topdev = {}
+            all_parents_rows = []
+
+            # نكتب كل Parent في شيت خاص داخل ملف الإكسل (نجهز البيانات أولاً)
+            output = BytesIO()
+            # نستخدم قائمة مؤقتة للاحتفاظ بأسماء وDFs لكل parent للكتابة لاحقًا
+            parent_sheets = []
+
+            for parent in selected_parents:
+                parent = str(parent).strip()
+                children = father_df[father_df[parent_col] == parent][child_col].dropna().astype(str).unique().tolist() if father_df is not None else []
+                total_children = len(children)
+                parent_components = bom_grouped.get(parent, set())
+
+                # نكوّن صفوف الاستخدام لكل component
+                usage_rows = []
+                for comp in parent_components:
+                    mrp_info = mrp_dict.get(comp, {})
+
+                    # تطبيق الفلاتر إن وُجدت
+                    if selected_order_types:
+                        if str(mrp_info.get(mrp_order_type_col)) not in set(selected_order_types):
+                            continue
+                    if selected_mrp_controllers:
+                        if str(mrp_info.get(mrp_controller_col)) not in set(selected_mrp_controllers):
+                            continue
+
+                    count = 0
+                    child_usage = {}
+                    for child in children:
+                        child_components = bom_grouped.get(child, {})
+                        if qty_col and isinstance(child_components, dict):
+                            qty_value = child_components.get(comp, 0)
+                        else:
+                            qty_value = 1 if comp in child_components else 0
+                        child_usage[child] = qty_value
+                        if qty_value > 0:
+                            count += 1
+
+                    usage_pct = round(count / total_children * 100, 2) if total_children > 0 else 0.0
+                    row = {
+                        component_col: comp,
+                        "Component Description": desc_lookup.get(comp, ""),
+                        "Total_Children": total_children,
+                        "Num_Children_with_Component": count,
+                        "Usage_%": usage_pct,
+                        "MRP_Controller": mrp_info.get(mrp_controller_col),
+                        "Order_Type": mrp_info.get(mrp_order_type_col)
+                    }
+                    row.update(child_usage)
+                    usage_rows.append(row)
+
+                # إنشاء DataFrame للـ parent واحتساب Deviation وترتيب الأعمدة
+                parent_df = pd.DataFrame(usage_rows)
+                if not parent_df.empty:
+                    # توحيد اسم العمود إلى 'Component'
+                    if component_col != 'Component' and component_col in parent_df.columns:
+                        parent_df.rename(columns={component_col: 'Component'}, inplace=True)
+
+                    # حساب الانحراف
+                    parent_df["Deviation"] = abs(parent_df["Num_Children_with_Component"] - (total_children))
+
+                    # ترتيب الأعمدة: نضمن وجود Component أولاً كما طلبت سابقاً
+                    parent_df = reorder_columns_for_parent(parent_df, children, ensure_component_first=True)
+
+                    # إضافة للكتابة في الإكسل لاحقًا
+                    parent_sheets.append((parent, parent_df.copy()))
+
+                    # أعلى الانحرافات لهذا Parent
+                    per_parent_topdev[parent] = parent_df.sort_values("Deviation", ascending=False).head(10)
+
+                    # تجميع للكُل (لمعالجة Top10 global)
+                    all_parents_rows.append(parent_df.assign(Parent=parent))
+
+                # ملخّص للـ Parent (سطر واحد)
+                total_comps = int(len(parent_df)) if 'parent_df' in locals() and not parent_df.empty else 0
+                shared_comps = int(parent_df['Num_Children_with_Component'].gt(0).sum()) if total_comps > 0 else 0
+                similarity_pct = round(shared_comps / total_comps * 100, 2) if total_comps > 0 else 0.0
+                summary_list.append({
+                    "Parent_Code": parent,
+                    "Num_Children": total_children,
+                    "Total_Components": total_comps,
+                    "Shared_Components": shared_comps,
+                    "Shared_Components_%": similarity_pct
+                })
+
+            # بعد اللوب: بناء summary_df وتوليد Top10 و all_merged_df
+            st.session_state.summary_df = pd.DataFrame(summary_list)
+            if all_parents_rows:
+                all_merged_df = pd.concat(all_parents_rows, ignore_index=True)
+                # توحيد اسم Component لو كان مختلفًا
+                if component_col != 'Component' and component_col in all_merged_df.columns:
+                    all_merged_df = all_merged_df.rename(columns={component_col: 'Component'})
+                st.session_state.all_merged_df = all_merged_df
+                st.session_state.top10_global = all_merged_df.sort_values("Deviation", ascending=False).head(10)
+            st.session_state.per_parent_topdev = per_parent_topdev
+
+            # تجهيز Summary مع صف الاجماليات (للكشف/العرض داخل الستريمليت)
+            summary_with_totals = add_summary_row(st.session_state.summary_df)
+            st.session_state.summary_display_df = summary_with_totals
+
+            # كتابة كل الشيتات في الـ BytesIO (الترتيب في parent_sheets جاهز)
+            # نضيف أيضاً شيت Summary_Report من النسخة الأصلية (بدون صف الاجماليات المضاف للعرض فقط)
+            output = export_results_to_excel(output, parent_sheets, st.session_state.summary_df, st.session_state.top10_global)
+            st.session_state.output_excel = output
+            st.session_state.analysis_complete = True
+            st.success("✅ اكتمل التحليل بنجاح! يمكنك الآن تصفح النتائج أو تحميل الإكسل.")
+
+    # ---------------------------
+    # عرض النتائج (UI)
+    # ---------------------------
+    if not st.session_state.analysis_complete:
+        st.info("ℹ️ اضغط على زر 'تشغيل التحليل' لعرض النتائج.")
+    else:
+        st.header("📈 نتائج التحليل")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("👨‍👩‍👧 عدد الـ Parents", len(st.session_state.summary_df))
+        avg_similarity = st.session_state.summary_df['Shared_Components_%'].mean() if not st.session_state.summary_df.empty else 0
+        col2.metric("🔄 متوسط نسبة التشابه", f"{avg_similarity:.2f}%")
+        total_shared = st.session_state.summary_df['Shared_Components'].sum() if not st.session_state.summary_df.empty else 0
+        col3.metric("🔗 إجمالي المكونات المشتركة", f"{total_shared}")
+
+        tab1, tab2, tab3 = st.tabs(["📊 الملخص الرئيسي", "🔥 أعلى الانحرافات", "👨‍👩‍👧 تفاصيل كل Parent"])
+
+        with tab1:
+            st.subheader("ملخص أداء كل Parent")
+            summary_df = st.session_state.summary_display_df.copy() if 'summary_display_df' in st.session_state else st.session_state.summary_df.copy()
+            if not summary_df.empty:
+                # عرض القيم العددية كأعداد صحيحة لبعض الأعمدة إن وُجدت
+                int_cols = ["Num_Children", "Total_Components", "Shared_Components"]
+                summary_df = safe_to_int_display(summary_df, int_cols)
+                # عمود النسب: نجعل العرض بدون كسور زائدة (عرض فقط كرقم صحيح مع %)
+                if "Shared_Components_%" in summary_df.columns and "Shared_Components_%" not in st.session_state.summary_df.columns:
+                    pass  # حالة خاصة (لا تحتاج عادة)
+                # عرض الجدول (إخفاء الإندكس)
+                st.dataframe(summary_df, hide_index=True)
+
+            st.markdown("---")
+            # قسم المكونات الأقل مشاركة
+            if not st.session_state.all_merged_df.empty:
+                low_shared_df = st.session_state.all_merged_df[st.session_state.all_merged_df['Usage_%'] < 100].sort_values('Usage_%')
+                st.subheader("📉 المكونات الأقل مشاركة عبر كل الـ Parents")
+                display_first = ['Parent', 'Component', 'Component Description', 'Parents', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                cols = [c for c in display_first if c in low_shared_df.columns] + [c for c in low_shared_df.columns if c not in display_first]
+                st.dataframe(low_shared_df[cols].head(200), hide_index=True)
+
+        with tab2:
+            st.subheader("أعلى 10 مكونات انحرافًا على المستوى الإجمالي")
+            top10 = st.session_state.top10_global.copy()
+            if not top10.empty:
+                display_first = ['Parent', 'Component', 'Component Description', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                cols = [c for c in display_first if c in top10.columns] + [c for c in top10.columns if c not in display_first]
+                st.dataframe(top10[cols], hide_index=True)
+            else:
+                st.info("لا توجد بيانات لعرض أعلى الانحرافات.")
+
+        with tab3:
+            st.subheader("استعراض تفاصيل الانحراف لكل Parent")
+            parents_with_dev = list(st.session_state.per_parent_topdev.keys())
+            if parents_with_dev:
+                chosen_parent = st.selectbox("اختر Parent لعرض تفاصيله", options=parents_with_dev)
+                dfp = st.session_state.per_parent_topdev.get(chosen_parent, pd.DataFrame()).copy()
+                if not dfp.empty:
+                    display_first = ['Parent', 'Component', 'Component Description', 'Parents', 'Total_Children', 'Num_Children_with_Component', 'Usage_%']
+                    cols = [c for c in display_first if c in dfp.columns] + [c for c in dfp.columns if c not in display_first]
+                    st.dataframe(dfp[cols], hide_index=True)
+                else:
+                    st.info("لا توجد بيانات انحراف لهذا الـ Parent.")
+            else:
+                st.warning("لا توجد بيانات انحراف لعرضها.")
+
+        st.markdown("---")
+        st.download_button(
+            label="🗂️  (Excel) تحميل التقرير الكامل  🔥",
+            data=st.session_state.output_excel.getvalue(),
+            file_name="MRP_BOM_Report_Optimized.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+except Exception as e:
+    # عرض الاستثناء للمستخدم كما في النسخة الأصلية
+    st.exception(f"❌ حدث خطأ: {e}")
+
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown(
+    """
+    <p style="text-align:center; margin-top:30px;">
+        ✨ تم التنفيذ بواسطة <b>م / رضا رشدي</b> – جميع الحقوق محفوظة © 2025 ✨
+    </p>
+    """,
+    unsafe_allow_html=True
+)
