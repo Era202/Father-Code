@@ -289,7 +289,7 @@ try:
                         # ترتيب الأعمدة لواجهة المستخدم لعرض منطقي
                         child_columns = [str(child) for child in children]
                         first_block = [
-                            "Planning Material",
+                            "Component",
                             "Component Description",
                             "Total_Children",
                             "Num_Children_with_Component",
@@ -457,3 +457,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
