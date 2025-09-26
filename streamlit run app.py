@@ -344,7 +344,30 @@ try:
 
         with tab1:
             st.subheader("ملخص أداء كل Parent")
-            st.dataframe(st.session_state.summary_df)
+    ###          ################st.dataframe(st.session_state.summary_df)
+            summary_df = st.session_state.summary_df.copy()
+            if not summary_df.empty:
+                # تحديد الأعمدة الرقمية
+                numeric_cols = summary_df.select_dtypes(include='number').columns
+
+                # الأعمدة الخاصة بالنسبة % أو التشابه
+                percent_cols = [c for c in numeric_cols if "%" in c or "تشابه" in c]
+
+                totals = summary_df[numeric_cols].sum()
+                averages = summary_df[percent_cols].mean()
+
+                # دمج النتائج (المتوسط يحل محل المجموع لو العمود نسبي)
+                for col in percent_cols:
+                    totals[col] = averages[col]
+
+                totals_row = pd.DataFrame(totals).T
+                totals_row.index = ['🔢 الإجماليات / المتوسطات']
+                summary_df = pd.concat([summary_df, totals_row], ignore_index=False)
+
+            st.dataframe(summary_df)
+
+
+            
             st.markdown("---")
 
             if not st.session_state.all_merged_df.empty:
@@ -402,6 +425,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 
 
