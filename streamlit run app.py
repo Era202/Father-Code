@@ -71,10 +71,10 @@ try:
     default_father = 1 + sheets.index("father code") if "father code" in sheets else 0
     father_sheet = st.sidebar.selectbox("اختر شيت الـ Father", options=father_options, index=default_father)
 
-    # اختيار شيت MRP Contro اختيارياً (تم المحافظة على الاسم الافتراضي كما في الكود الأصلي)
+    # اختيار شيت MRP Controller اختيارياً (تم المحافظة على الاسم الافتراضي كما في الكود الأصلي)
     mrp_options = ["None"] + sheets
-    default_mrp = 1 + sheets.index("MRP Contro") if "MRP Contro" in sheets else 0
-    mrp_sheet = st.sidebar.selectbox("اختر شيت MRP Contro (اختياري)", options=mrp_options, index=default_mrp)
+    default_mrp = 1 + sheets.index("MRP Controller") if "MRP Controller" in sheets else 0
+    mrp_sheet = st.sidebar.selectbox("اختر شيت MRP Controller (اختياري)", options=mrp_options, index=default_mrp)
 
     # قراءة البيانات من الشيتات المختارة
     bom_df = pd.read_excel(uploaded_file, sheet_name=bom_sheet)
